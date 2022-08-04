@@ -1,6 +1,6 @@
 {
     #boilerplate v0.0.1 true,
-    #id_name RecipeTestAppUpgradeSword, RecipeTestAppUpgradeSword,
+    #id_name RecipeTestAppUpgradeSword RecipeTestAppUpgradeSword,
     "description": "Upgrades sword to level 2 for shards",
     #no_coin_input,
     "itemInputs": [
