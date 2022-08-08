@@ -1,5 +1,5 @@
 {
-    #boilerplate_delayed v0.0.1 true 15,
+    #boilerplate_delayed v0.0.2 true 5,
     #id_name RecipeTestAppRest25 RecipeTestAppRest25,
     "description": "Rests, recovers 5HP",
     #no_coin_input,
