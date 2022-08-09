@@ -1,6 +1,6 @@
 # pylons-tools-demo-app
 
-##To play:
+## To play:
 
 1) Have the Pylons CLI installed
 2) 
