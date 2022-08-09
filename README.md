@@ -2,7 +2,9 @@
 
 ## To play:
 
-1) Have the Pylons CLI installed
+requirements: Go, Pylons CLI
+
+1) Clone it
 2) 
 ```
 cd cmd/pylons_tools_demo_app
