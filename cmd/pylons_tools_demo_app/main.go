@@ -7,11 +7,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/buger/jsonparser"
 )
+
+const dualJsonRootTxSplitMagic = `{"height":`
 
 const menu = "1) Fight a goblin!\n2) Fight a troll!\n3) Fight a dragon!\n4) Buy a sword!\n" +
 	"5) Upgrade your sword!\n6) Rest for a moment\n7) Rest for a bit\n8) Rest for a while\n9) Quit"
@@ -25,22 +28,6 @@ var characterId = ""
 var localAccount = ""
 var addr = ""
 var gameEnded = false
-var addrRegex = regexp.MustCompile(`{"key":"creator","value":"(.*?)"}`)
-
-var curHpRegex = regexp.MustCompile(`  - key: currentHp\n    value: "(.*?)"\n`)
-
-var swordLvRegex = regexp.MustCompile(`  - key: swordLevel\n    value: "(.*?)"\n`)
-
-var coinRegex = regexp.MustCompile(`  - key: coins\n    value: "(.*?)"\n`)
-
-var shardRegex = regexp.MustCompile(`  - key: shards\n    value: "(.*?)"\n`)
-
-// this is wild and broken, but this does in fact retrieve the exec id atm
-var execRegex = regexp.MustCompile(`  - key: itemID\n      value: (.*?)\n`)
-
-var itemIdRegex = regexp.MustCompile(`id: (.*?)\n`)
-
-var completedRegex = regexp.MustCompile(`completed: (.*?)\n`)
 
 func main() {
 	setLocalAccount()
@@ -100,36 +87,44 @@ func setLocalAccount() {
 func checkCharacter() {
 	println("Checking character...")
 	dat := execQueryCmd([]string{"query", "pylons", "get-item", "appTestCookbook", characterId})
-	var err error
-	curHp, err = strconv.Atoi(string(curHpRegex.FindStringSubmatch(dat)[1]))
-	if err != nil {
-		panic(err)
-	}
-	swordLv, err = strconv.Atoi(string(swordLvRegex.FindStringSubmatch(dat)[1]))
-	if err != nil {
-		panic(err)
-	}
-	coins, err = strconv.Atoi(string(coinRegex.FindStringSubmatch(dat)[1]))
-	if err != nil {
-		panic(err)
-	}
-	shards, err = strconv.Atoi(string(shardRegex.FindStringSubmatch(dat)[1]))
-	if err != nil {
-		panic(err)
-	}
+	curHp = retrieveLong([]byte(dat), "currentHp")
+	swordLv = retrieveLong([]byte(dat), "swordLevel")
+	coins = retrieveLong([]byte(dat), "coins")
+	shards = retrieveLong([]byte(dat), "shards")
 }
 
 func generateCharacter() {
 	println("Generating character...")
 	dat := execTxCmd([]string{"tx", "pylons", "execute-recipe", "appTestCookbook", "RecipeTestAppGetCharacter", "0", "[]", "[]", "--from", localAccount})
-	hash := dat[len(dat)-65 : len(dat)-1]
+	vs := splitDualJsonRoots(dat)
+	hash, err := jsonparser.GetString([]byte(vs[1]), "txhash")
+	if err != nil {
+		panic(err)
+	}
 	dat = execQueryCmd([]string{"query", "tx", hash})
-	addr = addrRegex.FindStringSubmatch(dat)[1]
+	addr, err = jsonparser.GetString([]byte(dat), "tx", "body", "messages", "[0]", "creator")
+	if err != nil {
+		panic(err)
+	}
 	dat = execQueryCmd([]string{"query", "pylons", "list-item-by-owner", addr})
-	matches := itemIdRegex.FindAllStringSubmatch(dat, -1)
-	// The last character in the list will be the most recently created.
-	// We really need a way to handle this data w/o doing inane things w/ regex tho
-	characterId = matches[len(matches)-2][1]
+	// this is a mess, we should write some helpers for queries like this
+	var found *[]byte
+	_, err = jsonparser.ArrayEach([]byte(dat), func(v0 []byte, dataType jsonparser.ValueType, offset int, err error) {
+		_, err = jsonparser.ArrayEach(v0, func(v1 []byte, dataType jsonparser.ValueType, offset int, err error) {
+			k, _ := jsonparser.GetString(v1, "key")
+			if k == "entityType" {
+				v, _ := jsonparser.GetString(v1, "value")
+				if v == "character" {
+					found = &v0 // todo: more logic to select a character, if multiple
+				}
+			}
+		}, "strings")
+	}, "items")
+
+	characterId, err = jsonparser.GetString(*found, "id")
+	if err != nil {
+		panic(err)
+	}
 	checkCharacter()
 }
 
@@ -273,7 +268,7 @@ func rest3() {
 
 func execQueryCmd(args []string) string {
 	args[len(args)-1] = strings.TrimSpace(args[len(args)-1])
-	cmd := exec.Command("pylonsd", args...)
+	cmd := exec.Command("pylonsd", append(args, "--output", "json")...)
 	var outb bytes.Buffer
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = &outb
@@ -283,7 +278,7 @@ func execQueryCmd(args []string) string {
 
 func execTxCmd(args []string) string {
 	args[len(args)-1] = strings.TrimSpace(args[len(args)-1])
-	cmd := exec.Command("pylonsd", args...)
+	cmd := exec.Command("pylonsd", append(args, "--output", "json")...)
 	var outb bytes.Buffer
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = &outb
@@ -300,7 +295,7 @@ func execTxCmd(args []string) string {
 
 func execDelayedTxCmd(args []string) string {
 	args[len(args)-1] = strings.TrimSpace(args[len(args)-1])
-	cmd := exec.Command("pylonsd", args...)
+	cmd := exec.Command("pylonsd", append(args, "--output", "json")...)
 	var outb bytes.Buffer
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = &outb
@@ -313,17 +308,82 @@ func execDelayedTxCmd(args []string) string {
 	cmd.Wait()
 	time.Sleep(time.Second * 5)
 	dat := outb.String()
-	hash := dat[len(dat)-65 : len(dat)-1]
+	vs := splitDualJsonRoots(dat)
+	hash, err := jsonparser.GetString([]byte(vs[1]), "txhash")
+	if err != nil {
+		panic(err)
+	}
 	dat = execQueryCmd([]string{"query", "tx", hash})
-	execId := execRegex.FindStringSubmatch(dat)[1]
+
+	// this is a mess, we should write some helpers for queries like this
+	var found *[]byte
+	_, err = jsonparser.ArrayEach([]byte(dat), func(v0 []byte, dataType jsonparser.ValueType, offset int, err error) {
+		k, _ := jsonparser.GetString(v0, "type")
+		if k == "create_execution" {
+			found = &v0
+			return
+		}
+	}, "logs", "[0]", "events")
+
+	execId := retrieveAttr(*found, "ID")
 
 	var escaped = false
 
 	for !escaped {
 		dat := execQueryCmd([]string{"query", "pylons", "get-execution", execId})
-		escaped = completedRegex.FindStringSubmatch(dat)[1] == "true"
+		v, err := jsonparser.GetBoolean([]byte(dat), "completed")
+		if err != nil {
+			panic(err)
+		}
+		escaped = v
 		println("...")
 	}
 
 	return outb.String()
+}
+
+func splitDualJsonRoots(dat string) []string {
+	// this is obnoxious: we get multiple json roots off this instead of smth well-formatted, so we have to hack around that
+	vs := strings.SplitN(dat, dualJsonRootTxSplitMagic, 2)
+	vs[1] = dualJsonRootTxSplitMagic + vs[1]
+	return vs
+}
+
+func retrieveLong(dat []byte, key string) int {
+	ret := 0
+	jsonparser.ArrayEach(dat, func(v []byte, dataType jsonparser.ValueType, offset int, err error) {
+		k, _ := jsonparser.GetString(v, "key")
+		if k == key {
+			v0, _ := jsonparser.GetString(v, "value")
+			ret, _ = strconv.Atoi(v0)
+			return
+		}
+	}, "item", "longs")
+	return ret
+}
+
+func retrieveString(dat []byte, key string) string {
+	ret := ""
+	jsonparser.ArrayEach(dat, func(v []byte, dataType jsonparser.ValueType, offset int, err error) {
+		k, _ := jsonparser.GetString(v, "key")
+		if k == key {
+			v, _ := jsonparser.GetString(v, "value")
+			ret = v
+			return
+		}
+	}, "item", "strings")
+	return ret
+}
+
+func retrieveAttr(dat []byte, key string) string {
+	ret := ""
+	jsonparser.ArrayEach(dat, func(v []byte, dataType jsonparser.ValueType, offset int, err error) {
+		k, _ := jsonparser.GetString(v, "key")
+		if k == key {
+			v, _ := jsonparser.GetString(v, "value")
+			ret = v
+			return
+		}
+	}, "attributes")
+	return ret
 }
