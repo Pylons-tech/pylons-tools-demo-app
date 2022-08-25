@@ -17,9 +17,11 @@ import (
 const dualJsonRootTxSplitMagic = `{"height":`
 
 const menu = "1) Fight a goblin!\n2) Fight a troll!\n3) Fight a dragon!\n4) Buy a sword!\n" +
-	"5) Upgrade your sword!\n6) Rest for a moment\n7) Rest for a bit\n8) Rest for a while\n9) Quit"
+	"5) Upgrade your sword!\n6) Rest for a moment\n7) Rest for a bit\n8) Rest for a while\n" +
+	"9) Power nap (9 PYL)\n10) Quit"
 
 var reader = bufio.NewReader(os.Stdin)
+var pylons = 0
 var swordLv = 0
 var shards = 0
 var coins = 0
@@ -38,7 +40,7 @@ func main() {
 		} else {
 			fmt.Printf("You have %s/20 HP remaining. You have a sword of level %s.\n\n", strconv.Itoa(curHp), strconv.Itoa(swordLv))
 		}
-		fmt.Printf("Coins: %s; Shards: %s\n\n", strconv.Itoa(coins), strconv.Itoa(shards))
+		fmt.Printf("Coins: %s; Shards: %s; Pylons Points: %s\n\n", strconv.Itoa(coins), strconv.Itoa(shards), strconv.Itoa(pylons))
 
 		if curHp < 1 {
 			println(("You have died."))
@@ -67,6 +69,8 @@ func main() {
 			case "8\n":
 				rest3()
 			case "9\n":
+				rest4()
+			case "10\n":
 				gameEnded = true
 			}
 		}
@@ -91,6 +95,18 @@ func checkCharacter() {
 	swordLv = retrieveLong([]byte(dat), "swordLevel")
 	coins = retrieveLong([]byte(dat), "coins")
 	shards = retrieveLong([]byte(dat), "shards")
+	dat = execQueryCmd([]string{"query", "bank", "balances", addr})
+	var pyl = 0
+	_, err := jsonparser.ArrayEach([]byte(dat), func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+		denom, _ := jsonparser.GetString(value, "denom")
+		if denom == "upylon" {
+			pyl, _ = strconv.Atoi(string(value))
+		}
+	}, "balances")
+	if err != nil {
+		panic(err)
+	}
+	pylons = pyl
 }
 
 func generateCharacter() {
@@ -108,19 +124,38 @@ func generateCharacter() {
 	}
 	dat = execQueryCmd([]string{"query", "pylons", "list-item-by-owner", addr})
 	// this is a mess, we should write some helpers for queries like this
+	// basically: it grabs the most recently updated character *unless* that character is dead
 	var found *[]byte
+	var lu = 0
 	_, err = jsonparser.ArrayEach([]byte(dat), func(v0 []byte, dataType jsonparser.ValueType, offset int, err error) {
-		_, err = jsonparser.ArrayEach(v0, func(v1 []byte, dataType jsonparser.ValueType, offset int, err error) {
-			k, _ := jsonparser.GetString(v1, "key")
-			if k == "entityType" {
-				v, _ := jsonparser.GetString(v1, "value")
-				if v == "character" {
-					found = &v0 // todo: more logic to select a character, if multiple
+		d, _ := jsonparser.GetString(v0, "last_update")
+		current, _ := strconv.Atoi(d)
+		if lu < current {
+			var dead = false
+			_, err = jsonparser.ArrayEach(v0, func(v1 []byte, dataType jsonparser.ValueType, offset int, err error) {
+				k, _ := jsonparser.GetString(v1, "key")
+				if k == "currentHp" {
+					v, _ := jsonparser.GetString(v1, "value")
+					if v == "0" {
+						println("dead")
+						dead = true
+					}
 				}
+			}, "longs")
+			if !dead {
+				_, err = jsonparser.ArrayEach(v0, func(v1 []byte, dataType jsonparser.ValueType, offset int, err error) {
+					k, _ := jsonparser.GetString(v1, "key")
+					if k == "entityType" {
+						v, _ := jsonparser.GetString(v1, "value")
+						if v == "character" {
+							lu = current
+							found = &v0
+						}
+					}
+				}, "strings")
 			}
-		}, "strings")
+		}
 	}, "items")
-
 	characterId, err = jsonparser.GetString(*found, "id")
 	if err != nil {
 		panic(err)
@@ -258,6 +293,21 @@ func rest2() {
 func rest3() {
 	println("Resting...")
 	execDelayedTxCmd([]string{"tx", "pylons", "execute-recipe", "appTestCookbook", "RecipeTestAppRest100", "0", fmt.Sprintf(`["%s"]`, characterId), "[]", "--from", localAccount})
+	println("Done!")
+	var lastHp = curHp
+	checkCharacter()
+	if lastHp != curHp {
+		fmt.Printf("Recovered %s HP!\n", strconv.Itoa(curHp-lastHp))
+	}
+}
+
+func rest4() {
+	if pylons < 9 {
+		println("You need 9 Pylons Points to take a power nap!")
+		return
+	}
+	println("Resting...")
+	execTxCmd([]string{"tx", "pylons", "execute-recipe", "appTestCookbook", "RecipeTestAppRest100Premium", "0", fmt.Sprintf(`["%s"]`, characterId), "[]", "--from", localAccount})
 	println("Done!")
 	var lastHp = curHp
 	checkCharacter()
