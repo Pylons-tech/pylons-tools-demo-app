@@ -1,5 +1,5 @@
 {
-    #boilerplate v0.0.1 true,
+    #boilerplate v0.0.5 true,
     #id_name RecipeTestAppFightTrollArmed RecipeTestAppFightTrollArmed,
     "description": "Fights a troll! With slicing!",
     #no_coin_input,
@@ -21,7 +21,7 @@
                     {
                         "key": "currentHp",
                         "weightRanges": [],
-                        "program": "currentHp - rand(1, 3)"
+                        "program": "currentHp - 3"
                     }
                 ],
                 "strings": [],
